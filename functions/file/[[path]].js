@@ -9,6 +9,87 @@ import {
 } from './fileTools';
 import { getDatabase } from '../utils/databaseAdapter.js';
 
+const DEFAULT_ACCESS_CONFIG = {
+    allowedDomains: '',
+    whiteListMode: false,
+};
+
+async function fetchFileSecurityConfig(context, url, Referer) {
+    const { env, waitUntil } = context;
+
+    // Dashboard/upload page requests should reflect settings immediately.
+    if (Referer && Referer.includes(url.origin)) {
+        return await fetchSecurityConfig(env);
+    }
+
+    const cacheKey = new Request(`${url.origin}/__cf-imgbed-internal/file-access-config`, { method: 'GET' });
+    const cachedResponse = await caches.default.match(cacheKey);
+    if (cachedResponse) {
+        try {
+            const cachedAccess = await cachedResponse.json();
+            return {
+                access: Object.assign({}, DEFAULT_ACCESS_CONFIG, cachedAccess),
+            };
+        } catch (error) {
+            console.error('Failed to parse cached file access config:', error);
+        }
+    }
+
+    const securityConfig = await fetchSecurityConfig(env);
+    const accessConfig = Object.assign({}, DEFAULT_ACCESS_CONFIG, securityConfig.access || {});
+
+    waitUntil(caches.default.put(cacheKey, new Response(JSON.stringify(accessConfig), {
+        headers: {
+            'Content-Type': 'application/json',
+            'Cache-Control': 'public, max-age=300',
+        },
+    })).catch((error) => {
+        console.error('Failed to cache file access config:', error);
+    }));
+
+    return Object.assign({}, securityConfig, { access: accessConfig });
+}
+
+function shouldUseEdgeCache(request, Referer, url) {
+    if (request.method !== 'GET') {
+        return false;
+    }
+
+    if (request.headers.has('Range')) {
+        return false;
+    }
+
+    // Dashboard/upload page requests should reflect current file state.
+    if (Referer && Referer.includes(url.origin)) {
+        return false;
+    }
+
+    return true;
+}
+
+function createCacheKey(url) {
+    return new Request(url.toString(), { method: 'GET' });
+}
+
+function cacheResponse(context, cacheKey, response) {
+    const { waitUntil } = context;
+
+    if (!cacheKey || response.status !== 200) {
+        return;
+    }
+
+    const cacheControl = response.headers.get('Cache-Control') || '';
+    if (!cacheControl.includes('public')) {
+        return;
+    }
+
+    const responseForCache = new Response(response.clone().body, response);
+    responseForCache.headers.set('Cache-Control', 'public, max-age=2592000, s-maxage=86400');
+    waitUntil(caches.default.put(cacheKey, responseForCache).catch((error) => {
+        console.error('Failed to cache file response:', error);
+    }));
+}
+
 
 export async function onRequest(context) {  // Contents of context object
     const {
@@ -29,19 +110,27 @@ export async function onRequest(context) {  // Contents of context object
         return new Response('Error: Decode Image ID Failed', { status: 400 });
     }
 
-    // 读取安全配置，解析必要参数
-    const securityConfig = await fetchSecurityConfig(env);
-    context.securityConfig = securityConfig;
-
     const url = new URL(request.url);
     context.url = url;
 
     const Referer = request.headers.get('Referer')
     context.Referer = Referer;
 
+    // 读取安全配置，解析必要参数
+    const securityConfig = await fetchFileSecurityConfig(context, url, Referer);
+    context.securityConfig = securityConfig;
+
     // 检查引用域名是否被允许
     if (!isDomainAllowed(context)) {
         return await returnBlockImg(url);
+    }
+
+    const cacheKey = shouldUseEdgeCache(request, Referer, url) ? createCacheKey(url) : null;
+    if (cacheKey) {
+        const cachedResponse = await caches.default.match(cacheKey);
+        if (cachedResponse) {
+            return cachedResponse;
+        }
     }
 
     // 从数据库中获取图片记录
@@ -68,12 +157,16 @@ export async function onRequest(context) {  // Contents of context object
 
     /* Cloudflare R2渠道 */
     if (imgRecord.metadata?.Channel === 'CloudflareR2') {
-        return await handleR2File(context, fileId, encodedFileName, fileType);
+        const response = await handleR2File(context, fileId, encodedFileName, fileType);
+        cacheResponse(context, cacheKey, response);
+        return response;
     }
 
     /* S3渠道 */
     if (imgRecord.metadata?.Channel === "S3") {
-        return await handleS3File(context, imgRecord.metadata, encodedFileName, fileType);
+        const response = await handleS3File(context, imgRecord.metadata, encodedFileName, fileType);
+        cacheResponse(context, cacheKey, response);
+        return response;
     }
 
     /* Discord 渠道 */
@@ -82,12 +175,16 @@ export async function onRequest(context) {  // Contents of context object
         if (imgRecord.metadata?.IsChunked === true) {
             return await handleDiscordChunkedFile(context, imgRecord, encodedFileName, fileType);
         }
-        return await handleDiscordFile(context, imgRecord.metadata, encodedFileName, fileType);
+        const response = await handleDiscordFile(context, imgRecord.metadata, encodedFileName, fileType);
+        cacheResponse(context, cacheKey, response);
+        return response;
     }
 
     /* HuggingFace 渠道 */
     if (imgRecord.metadata?.Channel === 'HuggingFace') {
-        return await handleHuggingFaceFile(context, imgRecord.metadata, encodedFileName, fileType);
+        const response = await handleHuggingFaceFile(context, imgRecord.metadata, encodedFileName, fileType);
+        cacheResponse(context, cacheKey, response);
+        return response;
     }
 
     /* 外链渠道 */
@@ -152,6 +249,7 @@ export async function onRequest(context) {  // Contents of context object
             headers,
         });
 
+        cacheResponse(context, cacheKey, newRes);
         return newRes;
     } catch (error) {
         return new Response('Error: ' + error, { status: 500 });
