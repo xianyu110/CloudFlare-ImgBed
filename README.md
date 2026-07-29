@@ -91,6 +91,8 @@
 
 免费文件托管解决方案，具有**上传**、**管理**、**读取**、**删除**等全链路功能，覆盖文件全生命周期，支持**鉴权**、**目录**、**图片审查**、**随机图**等各项特性（详见[功能文档](https://cfbed.sanyue.de/guide/features.html)）。
 
+如果你在做 AI 图片生成/编辑工作流，也可以把 [GPT Image 2](https://gptimage2.asia/) 生成的图片放进这里做托管、分享和预览。
+
 ![CloudFlare](static/readme/海报.png)
 
 # 2. [Document](https://cfbed.sanyue.de)
