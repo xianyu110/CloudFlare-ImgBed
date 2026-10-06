@@ -48,6 +48,37 @@ export function isFromPublicBrowse(Referer, origin) {
     return false;
 }
 
+const EXT_MIME = {
+    '.mp4': 'video/mp4',
+    '.webm': 'video/webm',
+    '.mov': 'video/quicktime',
+    '.webp': 'image/webp',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.svg': 'image/svg+xml',
+    '.mp3': 'audio/mpeg',
+    '.wav': 'audio/wav',
+    '.pdf': 'application/pdf',
+};
+
+function resolveContentType(headers, encodedFileName, fileType) {
+    const existing = headers.get('Content-Type');
+    const fromKv = fileType && fileType !== 'application/octet-stream' ? fileType : null;
+    if (fromKv) return fromKv;
+    if (existing && existing !== 'application/octet-stream') return existing;
+    try {
+        const name = decodeURIComponent(encodedFileName || '');
+        const i = name.lastIndexOf('.');
+        if (i >= 0) {
+            const mime = EXT_MIME[name.slice(i).toLowerCase()];
+            if (mime) return mime;
+        }
+    } catch (_) { /* ignore */ }
+    return fromKv || existing || 'application/octet-stream';
+}
+
 // 公共响应头设置函数
 export function setCommonHeaders(headers, encodedFileName, fileType, Referer, url) {
     headers.set('Content-Disposition', `inline; filename="${encodedFileName}"; filename*=UTF-8''${encodedFileName}`);
@@ -55,8 +86,9 @@ export function setCommonHeaders(headers, encodedFileName, fileType, Referer, ur
     headers.set('Accept-Ranges', 'bytes');
     headers.set('Vary', 'Range');
 
-    if (fileType) {
-        headers.set('Content-Type', fileType);
+    const resolved = resolveContentType(headers, encodedFileName, fileType);
+    if (resolved) {
+        headers.set('Content-Type', resolved);
     }
 
     // 根据Referer设置CDN缓存策略（排除公开图库页面的请求）

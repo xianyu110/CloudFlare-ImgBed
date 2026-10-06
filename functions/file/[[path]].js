@@ -68,7 +68,11 @@ function shouldUseEdgeCache(request, Referer, url) {
 }
 
 function createCacheKey(url) {
-    return new Request(url.toString(), { method: 'GET' });
+    // Bump path prefix when Content-Type / body serving changes so Cache API
+    // does not keep serving stale application/octet-stream responses.
+    const u = new URL(url.toString());
+    u.pathname = `/__cf-imgbed-cache/v2${u.pathname}`;
+    return new Request(u.toString(), { method: 'GET' });
 }
 
 function cacheResponse(context, cacheKey, response) {
